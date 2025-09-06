@@ -30,6 +30,7 @@ import random
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Set, Tuple
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -40,6 +41,9 @@ POLL_MIN_SEC = 5
 POLL_MAX_SEC = 10
 LOOKBACK_HOURS = 2
 CRITICAL_MAG = 6.4
+HEARTBEAT_TZ = os.getenv("HEARTBEAT_TZ", "Asia/Jerusalem")
+HEARTBEAT_HOUR = int(os.getenv("HEARTBEAT_HOUR", "16"))
+HEARTBEAT_FILE = "heartbeat_state.json"
 
 # Reference & distances
 LOS_ANGELES = (34.0522, -118.2437)
@@ -95,6 +99,38 @@ def market_windows() -> Dict[str, Tuple[datetime, datetime]]:
         "MEGA_80": (MEGA_START_ET, MEGA_END_ET),
         "ANY7_70": (ANY7_START_ET, ANY7_END_ET),
     }
+
+def load_heartbeat_last() -> str | None:
+    try:
+        with open(HEARTBEAT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("last_date") if isinstance(data, dict) else None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+def save_heartbeat_last(date_str: str) -> None:
+    try:
+        with open(HEARTBEAT_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_date": date_str}, f)
+    except Exception:
+        pass
+
+def maybe_send_heartbeat():
+    """
+    Send once a day at HEARTBEAT_HOUR in HEARTBEAT_TZ.
+    Uses HEARTBEAT_FILE to avoid duplicates.
+    """
+    tz = ZoneInfo(HEARTBEAT_TZ)
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    today_str = now_local.strftime("%Y-%m-%d")
+    last = load_heartbeat_last()
+
+    # send only if it's the right hour and we didn't send today
+    if now_local.hour == HEARTBEAT_HOUR and last != today_str:
+        send_discord(content=f"✅ Earthquake monitor heartbeat — still running ({today_str} {HEARTBEAT_HOUR:02d}:00, {HEARTBEAT_TZ}).")
+        save_heartbeat_last(today_str)
 
 
 def in_window_et(dt_utc: datetime, start_et: datetime, end_et: datetime) -> bool:
@@ -293,6 +329,11 @@ def main() -> None:
         log.error("Missing DISCORD_WEBHOOK_URL in .env")
         return
 
+    try:
+        send_discord(content="🚀 Earthquake monitor starting up (market-rule aware).")
+    except Exception as e:
+        log.warning(f"Startup Discord ping failed: {e}")
+
     seen = load_json_set(SEEN_FILE)
     pending = load_pending()
 
@@ -312,6 +353,7 @@ def main() -> None:
         except Exception as e:
             log.exception(f"Loop error: {e}")
 
+        maybe_send_heartbeat()
         time.sleep(random.uniform(POLL_MIN_SEC, POLL_MAX_SEC))
 
 
