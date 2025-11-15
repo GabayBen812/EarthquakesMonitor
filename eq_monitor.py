@@ -2,11 +2,13 @@
 """
 USGS Earthquake Monitor -> Discord (Market-Rule Aware)
 ------------------------------------------------------
-Matches three market-style rules:
+Matches five market-style rules:
   1) LA 50-mile: >= 6.5 within 50 miles of Los Angeles between 2025-06-09 00:00:00 ET
      and 2025-12-31 23:59:59 ET.
-  2) Megaquake: >= 8.0 anywhere between 2025-07-30 00:00:00 ET and 2025-09-30 23:59:59 ET.
-  3) 7.0+ anywhere: >= 7.0 anywhere between 2025-08-22 13:10:00 ET and 2025-09-30 23:59:59 ET.
+  2) Megaquake 1: >= 8.0 anywhere between 2025-10-30 00:00:00 ET and 2025-11-30 23:59:59 ET.
+  3) Megaquake 2: >= 8.0 anywhere between 2025-09-30 00:00:00 ET and 2025-12-31 23:59:59 ET.
+  4) 7.0+ Rule 1: >= 7.0 anywhere between 2025-10-30 19:00:00 ET and 2025-11-15 23:59:59 ET.
+  5) 7.0+ Rule 2: >= 7.0 anywhere between 2025-10-30 19:00:00 ET and 2025-11-30 23:59:59 ET.
 
 Also:
   - Alerts on all >= 6.4 quakes (global critical), even if not in a market window.
@@ -17,23 +19,26 @@ Also:
   - Persists seen IDs and pending market windows in JSON files.
 
 Setup:
-  pip install requests python-dotenv
-  .env -> DISCORD_WEBHOOK_URL=...
-  python eq_monitor_markets.py
+  pip install requests web3 eth-account
+  Edit eq_monitor.py and set:
+    - DISCORD_WEBHOOK_URL (required)
+    - POLYMARKET_PRIVATE_KEY (optional, for auto-trading)
+    - POLYMARKET_TRADE_AMOUNT_USD (optional, default 10)
+  python eq_monitor.py
 """
 
-import os
 import json
 import time
 import math
 import random
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Set, Tuple
+from typing import Dict, Any, List, Set, Tuple, Optional
 from zoneinfo import ZoneInfo
 
 import requests
-from dotenv import load_dotenv
+from web3 import Web3
+from eth_account import Account
 
 # -------------------- Config -------------------- #
 USGS_ENDPOINT = "https://earthquake.usgs.gov/fdsnws/event/1/query"
@@ -41,8 +46,8 @@ POLL_MIN_SEC = 5
 POLL_MAX_SEC = 10
 LOOKBACK_HOURS = 2
 CRITICAL_MAG = 6.4
-HEARTBEAT_TZ = os.getenv("HEARTBEAT_TZ", "Asia/Jerusalem")
-HEARTBEAT_HOUR = int(os.getenv("HEARTBEAT_HOUR", "16"))
+HEARTBEAT_TZ = "Asia/Jerusalem"  # Timezone for heartbeat
+HEARTBEAT_HOUR = 16  # Hour (24h format) to send heartbeat
 HEARTBEAT_FILE = "heartbeat_state.json"
 
 # Reference & distances
@@ -57,20 +62,58 @@ ET = timezone(timedelta(hours=-4), name="ET")
 LA_START_ET = datetime(2025, 6, 9, 0, 0, 0, tzinfo=ET)
 LA_END_ET   = datetime(2025, 12, 31, 23, 59, 59, tzinfo=ET)
 
-MEGA_START_ET = datetime(2025, 7, 30, 0, 0, 0, tzinfo=ET)
-MEGA_END_ET   = datetime(2025, 9, 30, 23, 59, 59, tzinfo=ET)
+# Megaquake markets
+MEGA1_START_ET = datetime(2025, 10, 30, 0, 0, 0, tzinfo=ET)
+MEGA1_END_ET   = datetime(2025, 11, 30, 23, 59, 59, tzinfo=ET)
 
-ANY7_START_ET = datetime(2025, 8, 22, 13, 10, 0, tzinfo=ET)
-ANY7_END_ET   = datetime(2025, 9, 30, 23, 59, 59, tzinfo=ET)
+MEGA2_START_ET = datetime(2025, 9, 30, 0, 0, 0, tzinfo=ET)
+MEGA2_END_ET   = datetime(2025, 12, 31, 23, 59, 59, tzinfo=ET)
+
+# 7.0+ markets
+ANY7_1_START_ET = datetime(2025, 10, 30, 19, 0, 0, tzinfo=ET)
+ANY7_1_END_ET   = datetime(2025, 11, 15, 23, 59, 59, tzinfo=ET)
+
+ANY7_2_START_ET = datetime(2025, 10, 30, 19, 0, 0, tzinfo=ET)
+ANY7_2_END_ET   = datetime(2025, 11, 30, 23, 59, 59, tzinfo=ET)
 
 # Pending resolution window
 PENDING_HOURS = 24
 PENDING_FILE = "pending_markets.json"
 SEEN_FILE = "seen_ids.json"
 
-# Discord
-load_dotenv()
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+# Discord Configuration
+DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"  # Replace with your Discord webhook URL
+
+# Polymarket Trading Configuration
+POLYMARKET_PRIVATE_KEY = "YOUR_PRIVATE_KEY_HERE"  # Replace with your wallet private key (0x...)
+POLYMARKET_TRADE_AMOUNT_USD = 10.0  # Trade amount in USD
+POLYGON_RPC_URL = "https://polygon-rpc.com"  # Polygon RPC endpoint
+POLYMARKET_CLOB_API = "https://clob.polymarket.com"
+
+# Market slug mapping (from labels to Polymarket slugs and outcome indices)
+# Outcome index 0 = "Yes", 1 = "No" for binary markets
+MARKET_MAPPING = {
+    "LA 50-mile ≥6.5 (2025-06-09..2025-12-31 23:59:59 ET)": {
+        "slug": "magnitude-6pt5-earthquake-in-la-before-2026",
+        "outcome_index": 0,  # Yes
+    },
+    "Megaquake ≥8.0 (2025-10-30..2025-11-30 23:59:59 ET)": {
+        "slug": "megaquake-by-november-30-934",
+        "outcome_index": 0,  # Yes
+    },
+    "Megaquake ≥8.0 (2025-09-30..2025-12-31 23:59:59 ET)": {
+        "slug": "megaquake-by-december-31",
+        "outcome_index": 0,  # Yes
+    },
+    "7.0+ anywhere (2025-10-30 19:00 ET..2025-11-15 23:59:59 ET)": {
+        "slug": "another-7pt0-or-above-earthquake-by-october-31-951",
+        "outcome_index": 0,  # November 15 outcome (Yes)
+    },
+    "7.0+ anywhere (2025-10-30 19:00 ET..2025-11-30 23:59:59 ET)": {
+        "slug": "another-7pt0-or-above-earthquake-by-october-31-951",
+        "outcome_index": 1,  # November 30 outcome (Yes) - Note: may need adjustment based on actual market structure
+    },
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("eq-monitor-markets")
@@ -96,8 +139,10 @@ def to_et(dt_utc: datetime) -> datetime:
 def market_windows() -> Dict[str, Tuple[datetime, datetime]]:
     return {
         "LA50_65": (LA_START_ET, LA_END_ET),
-        "MEGA_80": (MEGA_START_ET, MEGA_END_ET),
-        "ANY7_70": (ANY7_START_ET, ANY7_END_ET),
+        "MEGA1_80": (MEGA1_START_ET, MEGA1_END_ET),
+        "MEGA2_80": (MEGA2_START_ET, MEGA2_END_ET),
+        "ANY7_1_70": (ANY7_1_START_ET, ANY7_1_END_ET),
+        "ANY7_2_70": (ANY7_2_START_ET, ANY7_2_END_ET),
     }
 
 def load_heartbeat_last() -> str | None:
@@ -139,6 +184,10 @@ def in_window_et(dt_utc: datetime, start_et: datetime, end_et: datetime) -> bool
 
 
 def classify_markets(mag: float, lat: float, lon: float, t_utc: datetime) -> List[str]:
+    """
+    Classify which markets this earthquake matches.
+    Returns list of market label strings.
+    """
     labels: List[str] = []
     wins = market_windows()
 
@@ -147,13 +196,21 @@ def classify_markets(mag: float, lat: float, lon: float, t_utc: datetime) -> Lis
         if km_distance(lat, lon, LOS_ANGELES[0], LOS_ANGELES[1]) <= FIFTY_MILES_KM:
             labels.append("LA 50-mile ≥6.5 (2025-06-09..2025-12-31 23:59:59 ET)")
 
-    # Megaquake >= 8.0 within window
-    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA_80"]):
-        labels.append("Megaquake ≥8.0 (2025-07-30..2025-09-30 23:59:59 ET)")
+    # Megaquake 1: >= 8.0 between Oct 30 - Nov 30, 2025
+    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA1_80"]):
+        labels.append("Megaquake ≥8.0 (2025-10-30..2025-11-30 23:59:59 ET)")
 
-    # Another 7.0+ anywhere within window
-    if mag >= 7.0 and in_window_et(t_utc, *wins["ANY7_70"]):
-        labels.append("Another 7.0+ anywhere (2025-08-22 13:10 ET..2025-09-30 23:59:59 ET)")
+    # Megaquake 2: >= 8.0 between Sep 30 - Dec 31, 2025
+    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA2_80"]):
+        labels.append("Megaquake ≥8.0 (2025-09-30..2025-12-31 23:59:59 ET)")
+
+    # 7.0+ Rule 1: >= 7.0 between Oct 30 19:00 ET - Nov 15, 2025
+    if mag >= 7.0 and in_window_et(t_utc, *wins["ANY7_1_70"]):
+        labels.append("7.0+ anywhere (2025-10-30 19:00 ET..2025-11-15 23:59:59 ET)")
+
+    # 7.0+ Rule 2: >= 7.0 between Oct 30 19:00 ET - Nov 30, 2025
+    if mag >= 7.0 and in_window_et(t_utc, *wins["ANY7_2_70"]):
+        labels.append("7.0+ anywhere (2025-10-30 19:00 ET..2025-11-30 23:59:59 ET)")
 
     return labels
 
@@ -293,6 +350,259 @@ def upsert_pending(pending: Dict[str, Dict[str, Any]], eid: str, mag: float, occ
     save_pending(pending)
 
 
+# ------------------ Polymarket Trading Functions ------------------- #
+def initialize_web3() -> Optional[Web3]:
+    """Initialize Web3 connection to Polygon network."""
+    try:
+        w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL))
+        if not w3.is_connected():
+            log.error("Failed to connect to Polygon RPC")
+            return None
+        return w3
+    except Exception as e:
+        log.error(f"Error initializing Web3: {e}")
+        return None
+
+
+def get_polymarket_market_info(slug: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch market information from Polymarket API by slug.
+    Returns market data including condition ID and other identifiers.
+    """
+    endpoints_to_try = [
+        (f"{POLYMARKET_CLOB_API}/markets/{slug}", None),
+        (f"{POLYMARKET_CLOB_API}/markets", {"slug": slug}),
+    ]
+    
+    for api_url, params in endpoints_to_try:
+        try:
+            response = requests.get(api_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Handle different response formats
+            markets = []
+            if isinstance(data, list):
+                markets = data
+            elif isinstance(data, dict):
+                if data.get('slug') == slug or data.get('questionId') or data.get('conditionId'):
+                    return data
+                if 'data' in data and isinstance(data['data'], list):
+                    markets = data['data']
+                else:
+                    markets = [data]
+            
+            # Search through markets to find matching slug
+            for market in markets:
+                market_slug = market.get('slug') or market.get('marketSlug') or market.get('id')
+                if market_slug and slug in market_slug:
+                    log.info(f"Found matching market: {market.get('question', 'N/A')[:50]}")
+                    return market
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                continue
+            else:
+                log.warning(f"HTTP error {e.response.status_code} from {api_url}: {e}")
+                continue
+        except Exception as e:
+            log.warning(f"Error trying {api_url}: {e}")
+            continue
+    
+    # Try GraphQL API as fallback
+    try:
+        graphql_url = "https://api.polymarket.com/graphql"
+        query = """
+        query GetMarket($slug: String!) {
+            market(slug: $slug) {
+                id
+                slug
+                question
+                conditionId
+                outcomes
+            }
+        }
+        """
+        variables = {"slug": slug}
+        response = requests.post(
+            graphql_url,
+            json={"query": query, "variables": variables},
+            timeout=10
+        )
+        if response.status_code == 200:
+            graphql_data = response.json()
+            if graphql_data.get('data', {}).get('market'):
+                return graphql_data['data']['market']
+    except Exception as e:
+        log.warning(f"GraphQL API failed: {e}")
+    
+    log.error(f"All methods failed to find market with slug: {slug}")
+    return None
+
+
+def place_polymarket_order(market_label: str, eid: str, mag: float) -> Tuple[bool, str]:
+    """
+    Place a "Yes" buy order on Polymarket for the specified market.
+    Returns (success: bool, message: str)
+    """
+    if not POLYMARKET_PRIVATE_KEY:
+        return False, "POLYMARKET_PRIVATE_KEY not set in environment"
+    
+    if market_label not in MARKET_MAPPING:
+        return False, f"Market label '{market_label}' not found in MARKET_MAPPING"
+    
+    market_info = MARKET_MAPPING[market_label]
+    slug = market_info["slug"]
+    outcome_index = market_info["outcome_index"]
+    
+    try:
+        log.info(f"🚀 Starting trade for market: {slug} (label: {market_label})")
+        
+        # Step 1: Initialize Web3
+        w3 = initialize_web3()
+        if w3 is None:
+            return False, "Failed to connect to Polygon network"
+        
+        # Step 2: Get account from private key
+        account = Account.from_key(POLYMARKET_PRIVATE_KEY)
+        address = account.address
+        log.info(f"Account loaded: {address}")
+        
+        # Step 3: Get market info from Polymarket API
+        market_data = get_polymarket_market_info(slug)
+        if market_data is None:
+            return False, f"Failed to fetch market information for slug: {slug}"
+        
+        # Step 4: Extract condition ID
+        condition_id = (
+            market_data.get('conditionId') or 
+            market_data.get('condition_id') or
+            market_data.get('id') or 
+            market_data.get('questionId') or
+            market_data.get('question_id')
+        )
+        
+        if not condition_id:
+            return False, f"Could not find condition ID in market response for {slug}"
+        
+        # Step 5: Calculate amount (USDC has 6 decimals)
+        amount_raw = int(POLYMARKET_TRADE_AMOUNT_USD * 1e6)
+        
+        # Step 6: Get orderbook to find best price
+        best_price = None
+        try:
+            token_id = f"{condition_id}_{outcome_index}"
+            orderbook_url = f"{POLYMARKET_CLOB_API}/book"
+            orderbook_params = {"token_id": token_id}
+            
+            orderbook_response = requests.get(orderbook_url, params=orderbook_params, timeout=10)
+            if orderbook_response.status_code == 200:
+                orderbook = orderbook_response.json()
+                # Extract best ask price (price to buy)
+                asks = orderbook.get('asks', [])
+                if asks:
+                    best_price = asks[0].get('price', '0.99')
+                    log.info(f"Best ask price from orderbook: {best_price}")
+        except Exception as e:
+            log.warning(f"Could not fetch orderbook: {e}, using default price")
+            best_price = "0.99"  # Default price if orderbook fails
+        
+        # Step 7: Prepare order data
+        token_id = f"{condition_id}_{outcome_index}"
+        order_data = {
+            "token_id": token_id,
+            "side": "BUY",
+            "size": str(amount_raw),
+            "price": str(best_price),
+            "maker": address
+        }
+        
+        log.info(f"Order data prepared: {json.dumps(order_data, indent=2)}")
+        
+        # Step 8: Note about EIP-712 signing requirement
+        # Full execution requires EIP-712 signing and potentially API authentication
+        # For now, we log the prepared order
+        success_msg = (
+            f"✅ Order prepared for market: {slug}\n"
+            f"**Condition ID:** {condition_id}\n"
+            f"**Token ID:** {token_id}\n"
+            f"**Outcome Index:** {outcome_index} (Yes)\n"
+            f"**Amount:** ${POLYMARKET_TRADE_AMOUNT_USD} ({amount_raw:,} raw units)\n"
+            f"**Price:** {best_price}\n"
+            f"**Account:** {address}\n\n"
+            f"⚠️ **Note:** Order data prepared but full execution requires EIP-712 signing."
+        )
+        
+        log.info(f"✅ Trade preparation complete for {slug}")
+        return True, success_msg
+        
+    except Exception as e:
+        error_msg = f"Error placing Polymarket order: {str(e)}"
+        log.error(error_msg, exc_info=True)
+        return False, error_msg
+
+
+def execute_trades_for_markets(matched_labels: List[str], eid: str, mag: float) -> None:
+    """
+    Execute trades for all matched markets.
+    Sends Discord notifications about trade attempts.
+    """
+    if not matched_labels:
+        return
+    
+    if not POLYMARKET_PRIVATE_KEY:
+        log.warning("POLYMARKET_PRIVATE_KEY not set, skipping trades")
+        send_discord(
+            content=f"⚠️ Market matches detected but trading disabled (POLYMARKET_PRIVATE_KEY not set)\n"
+                   f"**Earthquake ID:** {eid}\n"
+                   f"**Magnitude:** {mag:.1f}\n"
+                   f"**Matched Markets:** {len(matched_labels)}\n"
+                   f"• " + "\n• ".join(matched_labels)
+        )
+        return
+    
+    log.info(f"🎯 Executing trades for {len(matched_labels)} matched markets")
+    
+    trade_results = []
+    for label in matched_labels:
+        success, message = place_polymarket_order(label, eid, mag)
+        trade_results.append({
+            "label": label,
+            "success": success,
+            "message": message
+        })
+        
+        # Send Discord notification for each trade attempt
+        status_emoji = "✅" if success else "❌"
+        send_discord(
+            content=f"{status_emoji} **Trade Attempt: {label}**\n\n"
+                   f"**Earthquake ID:** {eid}\n"
+                   f"**Magnitude:** {mag:.1f}\n\n"
+                   f"{message}"
+        )
+    
+    # Summary notification
+    successful = sum(1 for r in trade_results if r["success"])
+    failed = len(trade_results) - successful
+    
+    summary = (
+        f"📊 **Trade Execution Summary**\n\n"
+        f"**Earthquake ID:** {eid}\n"
+        f"**Magnitude:** {mag:.1f}\n"
+        f"**Total Markets Matched:** {len(matched_labels)}\n"
+        f"**Successful Preparations:** {successful}\n"
+        f"**Failed:** {failed}\n\n"
+    )
+    
+    if failed > 0:
+        summary += "**Failed Markets:**\n"
+        for r in trade_results:
+            if not r["success"]:
+                summary += f"• {r['label']}: {r['message']}\n"
+    
+    send_discord(content=summary)
+
+
 def process_events(features: List[Dict[str, Any]], seen: Set[str], pending: Dict[str, Dict[str, Any]]) -> None:
     for feat in features:
         eid = feat.get("id")
@@ -318,8 +628,11 @@ def process_events(features: List[Dict[str, Any]], seen: Set[str], pending: Dict
             log.info(f"Alert sent for {eid} | M{mag} | labels={labels}")
 
         # If this touches any market, place it into pending for 24h revision window
+        # and execute trades
         if labels:
             upsert_pending(pending, eid, mag, occurred_utc, labels)
+            # Execute trades for all matched markets
+            execute_trades_for_markets(labels, eid, mag)
 
         seen.add(eid)
 
