@@ -2,13 +2,27 @@
 """
 USGS Earthquake Monitor -> Discord (Market-Rule Aware)
 ------------------------------------------------------
-Matches five market-style rules:
+Monitors earthquakes and matches them against multiple Polymarket prediction markets.
+
+OLD MARKETS (2025):
   1) LA 50-mile: >= 6.5 within 50 miles of Los Angeles between 2025-06-09 00:00:00 ET
      and 2025-12-31 23:59:59 ET.
   2) Megaquake 1: >= 8.0 anywhere between 2025-10-30 00:00:00 ET and 2025-11-30 23:59:59 ET.
   3) Megaquake 2: >= 8.0 anywhere between 2025-09-30 00:00:00 ET and 2025-12-31 23:59:59 ET.
   4) 7.0+ Rule 1: >= 7.0 anywhere between 2025-10-30 19:00:00 ET and 2025-11-15 23:59:59 ET.
   5) 7.0+ Rule 2: >= 7.0 anywhere between 2025-10-30 19:00:00 ET and 2025-11-30 23:59:59 ET.
+
+NEW MARKETS (2026):
+  6) 10.0+ earthquake before 2027 (all of 2026)
+  7) 9.0+ earthquake before 2027 (all of 2026)
+  8) Megaquake by January 31, 2026
+  9) Megaquake by March 31, 2026
+  10) Megaquake by June 30, 2026
+  11) Another 7.0+ earthquake by March 31, 2026
+  12) How many 7.0+ earthquakes by June 30, 2026 (counting market)
+  13) How many 6.5+ earthquakes by January 11, 2026 (counting market)
+  14) How many 6.5+ earthquakes by January 18, 2026 (counting market)
+  15) How many 7.0+ earthquakes in 2026 (counting market)
 
 Also:
   - Alerts on all >= 6.4 quakes (global critical), even if not in a market window.
@@ -55,26 +69,65 @@ LOS_ANGELES = (34.0522, -118.2437)
 FIFTY_MILES_KM = 80.4672  # exact 50 miles
 
 # Markets windows (ET). We'll construct aware datetimes in ET (UTC-4 during this period).
-# We'll represent ET as a fixed offset UTC-4 for 2025 windows (DST-aware enough for this use).
 # For strict TZ handling, swap to zoneinfo("America/New_York").
 ET = timezone(timedelta(hours=-4), name="ET")
 
+# ========== OLD MARKETS (2025) ==========
 LA_START_ET = datetime(2025, 6, 9, 0, 0, 0, tzinfo=ET)
 LA_END_ET   = datetime(2025, 12, 31, 23, 59, 59, tzinfo=ET)
 
-# Megaquake markets
 MEGA1_START_ET = datetime(2025, 10, 30, 0, 0, 0, tzinfo=ET)
 MEGA1_END_ET   = datetime(2025, 11, 30, 23, 59, 59, tzinfo=ET)
 
 MEGA2_START_ET = datetime(2025, 9, 30, 0, 0, 0, tzinfo=ET)
 MEGA2_END_ET   = datetime(2025, 12, 31, 23, 59, 59, tzinfo=ET)
 
-# 7.0+ markets
 ANY7_1_START_ET = datetime(2025, 10, 30, 19, 0, 0, tzinfo=ET)
 ANY7_1_END_ET   = datetime(2025, 11, 15, 23, 59, 59, tzinfo=ET)
 
 ANY7_2_START_ET = datetime(2025, 10, 30, 19, 0, 0, tzinfo=ET)
 ANY7_2_END_ET   = datetime(2025, 11, 30, 23, 59, 59, tzinfo=ET)
+
+# ========== NEW MARKETS (2026) ==========
+# 10.0+ before 2027
+QUAKE_10_BEFORE_2027_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+QUAKE_10_BEFORE_2027_END_ET   = datetime(2026, 12, 31, 23, 59, 59, tzinfo=ET)
+
+# 9.0+ before 2027
+QUAKE_9_BEFORE_2027_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+QUAKE_9_BEFORE_2027_END_ET   = datetime(2026, 12, 31, 23, 59, 59, tzinfo=ET)
+
+# Megaquake by January 31, 2026
+MEGA_JAN31_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+MEGA_JAN31_END_ET   = datetime(2026, 1, 31, 23, 59, 59, tzinfo=ET)
+
+# Megaquake by March 31, 2026
+MEGA_MAR31_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+MEGA_MAR31_END_ET   = datetime(2026, 3, 31, 23, 59, 59, tzinfo=ET)
+
+# Megaquake by June 30, 2026
+MEGA_JUN30_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+MEGA_JUN30_END_ET   = datetime(2026, 6, 30, 23, 59, 59, tzinfo=ET)
+
+# Another 7.0+ by March 31, 2026
+ANY7_MAR31_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+ANY7_MAR31_END_ET   = datetime(2026, 3, 31, 23, 59, 59, tzinfo=ET)
+
+# How many 7.0+ by June 30, 2026
+COUNT_7_JUN30_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+COUNT_7_JUN30_END_ET   = datetime(2026, 6, 30, 23, 59, 59, tzinfo=ET)
+
+# How many 6.5+ by January 11, 2026
+COUNT_65_JAN11_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+COUNT_65_JAN11_END_ET   = datetime(2026, 1, 11, 23, 59, 59, tzinfo=ET)
+
+# How many 6.5+ by January 18, 2026
+COUNT_65_JAN18_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+COUNT_65_JAN18_END_ET   = datetime(2026, 1, 18, 23, 59, 59, tzinfo=ET)
+
+# How many 7.0+ in 2026
+COUNT_7_2026_START_ET = datetime(2026, 1, 1, 0, 0, 0, tzinfo=ET)
+COUNT_7_2026_END_ET   = datetime(2026, 12, 31, 23, 59, 59, tzinfo=ET)
 
 # Pending resolution window
 PENDING_HOURS = 24
@@ -92,7 +145,9 @@ POLYMARKET_CLOB_API = "https://clob.polymarket.com"
 
 # Market slug mapping (from labels to Polymarket slugs and outcome indices)
 # Outcome index 0 = "Yes", 1 = "No" for binary markets
+# For counting markets, outcome_index may need to be adjusted based on market structure
 MARKET_MAPPING = {
+    # ========== OLD MARKETS (2025) ==========
     "LA 50-mile ≥6.5 (2025-06-09..2025-12-31 23:59:59 ET)": {
         "slug": "magnitude-6pt5-earthquake-in-la-before-2026",
         "outcome_index": 0,  # Yes
@@ -112,6 +167,47 @@ MARKET_MAPPING = {
     "7.0+ anywhere (2025-10-30 19:00 ET..2025-11-30 23:59:59 ET)": {
         "slug": "another-7pt0-or-above-earthquake-by-october-31-951",
         "outcome_index": 1,  # November 30 outcome (Yes) - Note: may need adjustment based on actual market structure
+    },
+    # ========== NEW MARKETS (2026) ==========
+    "10.0+ earthquake before 2027": {
+        "slug": "10pt0-or-above-earthquake-before-2027",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "9.0+ earthquake before 2027": {
+        "slug": "9pt0-or-above-earthquake-before-2027",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "Megaquake by January 31, 2026": {
+        "slug": "megaquake-by-january-31",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "Megaquake by March 31, 2026": {
+        "slug": "megaquake-by-march-31",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "Megaquake by June 30, 2026": {
+        "slug": "megaquake-by-june-30",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "Another 7.0+ earthquake by March 31, 2026": {
+        "slug": "another-7pt0-or-above-earthquake-by-march-31",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Yes
+    },
+    "How many 7.0+ earthquakes by June 30, 2026": {
+        "slug": "how-many-7pt0-or-above-earthquakes-by-june-30",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Note: Counting market - may need specific outcome index
+    },
+    "How many 6.5+ earthquakes by January 11, 2026": {
+        "slug": "how-many-6pt5-or-above-earthquakes-by-january-11",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Note: Counting market - may need specific outcome index
+    },
+    "How many 6.5+ earthquakes by January 18, 2026": {
+        "slug": "how-many-6pt5-or-above-earthquakes-by-january-18",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Note: Counting market - may need specific outcome index
+    },
+    "How many 7.0+ earthquakes in 2026": {
+        "slug": "how-many-7pt0-or-above-earthquakes-in-2026",  # TODO: Update with actual slug
+        "outcome_index": 0,  # Note: Counting market - may need specific outcome index
     },
 }
 
@@ -138,27 +234,41 @@ def to_et(dt_utc: datetime) -> datetime:
 
 def market_windows() -> Dict[str, Tuple[datetime, datetime]]:
     return {
+        # Old markets (2025)
         "LA50_65": (LA_START_ET, LA_END_ET),
         "MEGA1_80": (MEGA1_START_ET, MEGA1_END_ET),
         "MEGA2_80": (MEGA2_START_ET, MEGA2_END_ET),
         "ANY7_1_70": (ANY7_1_START_ET, ANY7_1_END_ET),
         "ANY7_2_70": (ANY7_2_START_ET, ANY7_2_END_ET),
+        # New markets (2026)
+        "QUAKE_10_2027": (QUAKE_10_BEFORE_2027_START_ET, QUAKE_10_BEFORE_2027_END_ET),
+        "QUAKE_9_2027": (QUAKE_9_BEFORE_2027_START_ET, QUAKE_9_BEFORE_2027_END_ET),
+        "MEGA_JAN31": (MEGA_JAN31_START_ET, MEGA_JAN31_END_ET),
+        "MEGA_MAR31": (MEGA_MAR31_START_ET, MEGA_MAR31_END_ET),
+        "MEGA_JUN30": (MEGA_JUN30_START_ET, MEGA_JUN30_END_ET),
+        "ANY7_MAR31": (ANY7_MAR31_START_ET, ANY7_MAR31_END_ET),
+        "COUNT_7_JUN30": (COUNT_7_JUN30_START_ET, COUNT_7_JUN30_END_ET),
+        "COUNT_65_JAN11": (COUNT_65_JAN11_START_ET, COUNT_65_JAN11_END_ET),
+        "COUNT_65_JAN18": (COUNT_65_JAN18_START_ET, COUNT_65_JAN18_END_ET),
+        "COUNT_7_2026": (COUNT_7_2026_START_ET, COUNT_7_2026_END_ET),
     }
 
 def load_heartbeat_last() -> str | None:
+    """Load the last heartbeat timestamp (YYYY-MM-DD-HH format)."""
     try:
         with open(HEARTBEAT_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data.get("last_date") if isinstance(data, dict) else None
+            return data.get("last_timestamp") if isinstance(data, dict) else None
     except FileNotFoundError:
         return None
     except Exception:
         return None
 
-def save_heartbeat_last(date_str: str) -> None:
+def save_heartbeat_last(timestamp_str: str) -> None:
+    """Save the last heartbeat timestamp (YYYY-MM-DD-HH format)."""
     try:
         with open(HEARTBEAT_FILE, "w", encoding="utf-8") as f:
-            json.dump({"last_date": date_str}, f)
+            json.dump({"last_timestamp": timestamp_str}, f)
     except Exception:
         pass
 
@@ -169,25 +279,49 @@ def maybe_send_heartbeat():
     """
     tz = ZoneInfo(HEARTBEAT_TZ)
     now_local = datetime.now(timezone.utc).astimezone(tz)
-    today_str = now_local.strftime("%Y-%m-%d")
+    # Use hour+date to ensure we only send once per hour
+    timestamp_str = now_local.strftime("%Y-%m-%d-%H")
     last = load_heartbeat_last()
 
-    # send only if it's the right hour (and within first 5 minutes to avoid repeats)
-    # and we didn't send today. Save state BEFORE sending to prevent race conditions.
+    # Only send if:
+    # 1. It's the right hour
+    # 2. We're in the first 2 minutes (to catch the hour, but not too wide)
+    # 3. We haven't sent in this hour yet (hour+date tracking prevents duplicates)
     if (now_local.hour == HEARTBEAT_HOUR and 
-        now_local.minute < 5 and 
-        last != today_str):
-        save_heartbeat_last(today_str)  # Save first to prevent duplicates
+        now_local.minute < 2 and 
+        last != timestamp_str):
+        save_heartbeat_last(timestamp_str)  # Save first to prevent duplicates
         
         # Test USGS connection
         usgs_ok, usgs_msg = test_usgs_connection()
         
-        # Build heartbeat message with connection test
-        heartbeat_msg = (
-            f"✅ Earthquake monitor heartbeat — still running ({today_str} {HEARTBEAT_HOUR:02d}:00, {HEARTBEAT_TZ}).\n"
-            f"{usgs_msg}"
-        )
-        send_discord(content=heartbeat_msg)
+        # Build modern embed with color
+        color = 0x00ff00 if usgs_ok else 0xff0000  # Green if OK, red if error
+        status_emoji = "✅" if usgs_ok else "❌"
+        
+        embed = {
+            "title": "💓 Earthquake Monitor Heartbeat",
+            "description": f"Monitor is still running and active",
+            "color": color,
+            "fields": [
+                {
+                    "name": "⏰ Time",
+                    "value": f"{now_local.strftime('%Y-%m-%d %H:%M')} ({HEARTBEAT_TZ})",
+                    "inline": True
+                },
+                {
+                    "name": f"{status_emoji} USGS API Status",
+                    "value": usgs_msg.replace("✅ ", "").replace("❌ ", ""),
+                    "inline": True
+                }
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "footer": {
+                "text": "Earthquake Monitor System"
+            }
+        }
+        
+        send_discord(content=None, embed=embed)
 
 
 def in_window_et(dt_utc: datetime, start_et: datetime, end_et: datetime) -> bool:
@@ -203,6 +337,7 @@ def classify_markets(mag: float, lat: float, lon: float, t_utc: datetime) -> Lis
     labels: List[str] = []
     wins = market_windows()
 
+    # ========== OLD MARKETS (2025) ==========
     # LA 50mi >= 6.5 within window
     if mag >= 6.5 and in_window_et(t_utc, *wins["LA50_65"]):
         if km_distance(lat, lon, LOS_ANGELES[0], LOS_ANGELES[1]) <= FIFTY_MILES_KM:
@@ -223,6 +358,47 @@ def classify_markets(mag: float, lat: float, lon: float, t_utc: datetime) -> Lis
     # 7.0+ Rule 2: >= 7.0 between Oct 30 19:00 ET - Nov 30, 2025
     if mag >= 7.0 and in_window_et(t_utc, *wins["ANY7_2_70"]):
         labels.append("7.0+ anywhere (2025-10-30 19:00 ET..2025-11-30 23:59:59 ET)")
+
+    # ========== NEW MARKETS (2026) ==========
+    # 10.0+ before 2027
+    if mag >= 10.0 and in_window_et(t_utc, *wins["QUAKE_10_2027"]):
+        labels.append("10.0+ earthquake before 2027")
+
+    # 9.0+ before 2027
+    if mag >= 9.0 and in_window_et(t_utc, *wins["QUAKE_9_2027"]):
+        labels.append("9.0+ earthquake before 2027")
+
+    # Megaquake by January 31, 2026
+    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA_JAN31"]):
+        labels.append("Megaquake by January 31, 2026")
+
+    # Megaquake by March 31, 2026
+    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA_MAR31"]):
+        labels.append("Megaquake by March 31, 2026")
+
+    # Megaquake by June 30, 2026
+    if mag >= 8.0 and in_window_et(t_utc, *wins["MEGA_JUN30"]):
+        labels.append("Megaquake by June 30, 2026")
+
+    # Another 7.0+ by March 31, 2026
+    if mag >= 7.0 and in_window_et(t_utc, *wins["ANY7_MAR31"]):
+        labels.append("Another 7.0+ earthquake by March 31, 2026")
+
+    # How many 7.0+ by June 30, 2026 (counting market)
+    if mag >= 7.0 and in_window_et(t_utc, *wins["COUNT_7_JUN30"]):
+        labels.append("How many 7.0+ earthquakes by June 30, 2026")
+
+    # How many 6.5+ by January 11, 2026 (counting market)
+    if mag >= 6.5 and in_window_et(t_utc, *wins["COUNT_65_JAN11"]):
+        labels.append("How many 6.5+ earthquakes by January 11, 2026")
+
+    # How many 6.5+ by January 18, 2026 (counting market)
+    if mag >= 6.5 and in_window_et(t_utc, *wins["COUNT_65_JAN18"]):
+        labels.append("How many 6.5+ earthquakes by January 18, 2026")
+
+    # How many 7.0+ in 2026 (counting market)
+    if mag >= 7.0 and in_window_et(t_utc, *wins["COUNT_7_2026"]):
+        labels.append("How many 7.0+ earthquakes in 2026")
 
     return labels
 
@@ -679,7 +855,29 @@ def main() -> None:
         return
 
     try:
-        send_discord(content="🚀 Earthquake monitor starting up (market-rule aware).")
+        # Send modern startup embed
+        embed = {
+            "title": "🚀 Earthquake Monitor Starting Up",
+            "description": "Market-rule aware earthquake monitoring system initialized",
+            "color": 0x00bfff,  # Bright blue for startup
+            "fields": [
+                {
+                    "name": "📊 Monitor Type",
+                    "value": "Market-Rule Aware",
+                    "inline": True
+                },
+                {
+                    "name": "⏰ Status",
+                    "value": "Initializing...",
+                    "inline": True
+                }
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "footer": {
+                "text": "Earthquake Monitor System"
+            }
+        }
+        send_discord(content=None, embed=embed)
     except Exception as e:
         log.warning(f"Startup Discord ping failed: {e}")
 
