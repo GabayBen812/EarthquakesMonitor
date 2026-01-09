@@ -82,10 +82,10 @@ PENDING_FILE = "pending_markets.json"
 SEEN_FILE = "seen_ids.json"
 
 # Discord Configuration
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"  # Replace with your Discord webhook URL
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1399905616478339222/_IexstbUDr9-_cvGllvwvhCaTt3iDs2qVGBIqrDPb4VPkNPA2fCWVtFdVLWLQDVt9zWh"  # Replace with your Discord webhook URL
 
 # Polymarket Trading Configuration
-POLYMARKET_PRIVATE_KEY = "YOUR_PRIVATE_KEY_HERE"  # Replace with your wallet private key (0x...)
+POLYMARKET_PRIVATE_KEY = "0x3a08e6c54bbaee0fac8e3fdf7f8f0dc529e6744977610caf093e34e7cb4cd2f8"  # Replace with your wallet private key (0x...)
 POLYMARKET_TRADE_AMOUNT_USD = 10.0  # Trade amount in USD
 POLYGON_RPC_URL = "https://polygon-rpc.com"  # Polygon RPC endpoint
 POLYMARKET_CLOB_API = "https://clob.polymarket.com"
@@ -172,10 +172,22 @@ def maybe_send_heartbeat():
     today_str = now_local.strftime("%Y-%m-%d")
     last = load_heartbeat_last()
 
-    # send only if it's the right hour and we didn't send today
-    if now_local.hour == HEARTBEAT_HOUR and last != today_str:
-        send_discord(content=f"✅ Earthquake monitor heartbeat — still running ({today_str} {HEARTBEAT_HOUR:02d}:00, {HEARTBEAT_TZ}).")
-        save_heartbeat_last(today_str)
+    # send only if it's the right hour (and within first 5 minutes to avoid repeats)
+    # and we didn't send today. Save state BEFORE sending to prevent race conditions.
+    if (now_local.hour == HEARTBEAT_HOUR and 
+        now_local.minute < 5 and 
+        last != today_str):
+        save_heartbeat_last(today_str)  # Save first to prevent duplicates
+        
+        # Test USGS connection
+        usgs_ok, usgs_msg = test_usgs_connection()
+        
+        # Build heartbeat message with connection test
+        heartbeat_msg = (
+            f"✅ Earthquake monitor heartbeat — still running ({today_str} {HEARTBEAT_HOUR:02d}:00, {HEARTBEAT_TZ}).\n"
+            f"{usgs_msg}"
+        )
+        send_discord(content=heartbeat_msg)
 
 
 def in_window_et(dt_utc: datetime, start_et: datetime, end_et: datetime) -> bool:
@@ -253,6 +265,30 @@ def save_pending(pending: Dict[str, Dict[str, Any]]) -> None:
             json.dump(pending, f, ensure_ascii=False, indent=2, default=str)
     except Exception as e:
         log.warning(f"Failed to write {PENDING_FILE}: {e}")
+
+
+def test_usgs_connection() -> Tuple[bool, str]:
+    """
+    Test connection to USGS API.
+    Returns (success: bool, message: str)
+    """
+    try:
+        # Make a simple test request with minimal parameters
+        params = {
+            "format": "geojson",
+            "limit": "1",
+        }
+        r = requests.get(USGS_ENDPOINT, params=params, timeout=10)
+        if r.status_code == 200:
+            return True, f"✅ USGS API: Status {r.status_code} OK"
+        else:
+            return False, f"❌ USGS API: Status {r.status_code} (unexpected)"
+    except requests.exceptions.Timeout:
+        return False, "❌ USGS API: Connection timeout"
+    except requests.exceptions.ConnectionError:
+        return False, "❌ USGS API: Connection error (site may be blocked)"
+    except Exception as e:
+        return False, f"❌ USGS API: Error - {str(e)[:100]}"
 
 
 def fetch_recent_events(since_utc: datetime) -> Dict[str, Any]:
